@@ -72,6 +72,8 @@ let config: {
   cloneSubmodules: boolean | undefined;
   ignorePrAuthor: boolean | undefined;
   squash: boolean;
+  includeMirrors: boolean | undefined;
+  mirroredRepo: string | undefined;
 } = {} as any;
 
 const defaults = {
@@ -263,11 +265,13 @@ export async function initRepo({
   ignorePrAuthor,
   gitUrl,
   endpoint,
+  includeMirrors,
 }: RepoParams): Promise<RepoResult> {
   config = {} as any;
   config.repository = urlEscape(repository);
   config.cloneSubmodules = cloneSubmodules;
   config.ignorePrAuthor = ignorePrAuthor;
+  config.includeMirrors = includeMirrors;
 
   let res: HttpResponse<RepoResponse>;
   try {
@@ -281,10 +285,23 @@ export async function initRepo({
       throw new Error(REPOSITORY_ARCHIVED);
     }
     if (res.body.mirror) {
-      logger.debug(
-        'Repository is a mirror - throwing error to abort renovation'
-      );
-      throw new Error(REPOSITORY_MIRRORED);
+      if (includeMirrors && !!res.body.forked_from_project) {
+        logger.debug(
+          'Repository is a mirror - resuming because "includeMirrors" is enabled'
+        );
+        // Set the repo to the upstream project ID for most Gitlab calls
+        // Mirrored Repo will be used for some Gitlab calls
+        config.mirroredRepo = config.repository;
+        config.repository = res.body.forked_from_project?.id;
+        logger.debug(
+          `Repo ${repository} is a mirror of project ID=${config.repository}`
+        );
+      } else {
+        logger.debug(
+          'Repository is a mirror - throwing error to abort renovation'
+        );
+        throw new Error(REPOSITORY_MIRRORED);
+      }
     }
     if (res.body.repository_access_level === 'disabled') {
       logger.debug(
@@ -645,9 +662,13 @@ export async function createPr({
     title = draftPrefix + title;
   }
   const description = sanitize(rawDescription);
+  // Mirror repos create MRs with source project as themselves
+  const mrSourceProject = config.mirroredRepo ?? config.repository;
+  // Mirror repos should set a target project during MR creation
+  const mrTargetProject = config.mirroredRepo ? config.repository : null;
   logger.debug(`Creating Merge Request: ${title}`);
   const res = await gitlabApi.postJson<Pr & { iid: number }>(
-    `projects/${config.repository}/merge_requests`,
+    `projects/${mrSourceProject}/merge_requests`,
     {
       body: {
         source_branch: sourceBranch,
@@ -657,6 +678,7 @@ export async function createPr({
         description,
         labels: (labels ?? []).join(','),
         squash: config.squash,
+        target_project_id: mrTargetProject,
       },
     }
   );
@@ -836,11 +858,13 @@ export async function setBranchStatus({
   state: renovateState,
   url: targetUrl,
 }: BranchStatusConfig): Promise<void> {
+  // Branch status is checked from mirrored repo
+  const branchSourceProject = config.mirroredRepo ?? config.repository;
   // First, get the branch commit SHA
   const branchSha = git.getBranchCommit(branchName);
   // Now, check the statuses for that commit
   // TODO: types (#7154)
-  const url = `projects/${config.repository}/statuses/${branchSha!}`;
+  const url = `projects/${branchSourceProject}/statuses/${branchSha!}`;
   let state = 'success';
   if (renovateState === 'yellow') {
     state = 'pending';

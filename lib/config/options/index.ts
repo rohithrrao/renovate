@@ -2681,6 +2681,13 @@ const options: RenovateOptions[] = [
     globalOnly: true,
     default: [],
   },
+  {
+    name: 'includeMirrors',
+    description: 'Whether to include mirror repos',
+    type: 'boolean',
+    default: false,
+    supportedPlatforms: ['gitlab'],
+  },
 ];
 
 export function getOptions(): RenovateOptions[] {
